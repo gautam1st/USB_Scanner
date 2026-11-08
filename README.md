@@ -23,3 +23,5 @@ The default configuration detects threats but does not delete or quarantine
 files. Enable `AUTO_QUARANTINE` in `config.py` only after testing and review.
 
 The API key previously committed to this project should be revoked and replaced.
+
+Just install this and "past Virustotal API" key on "README.md" and this application is ready to go.
