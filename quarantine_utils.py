@@ -1,9 +1,10 @@
 """Safe quarantine, verification, and restore utilities for USB-Guard SOC.
 
 Supports two modes:
-- mode="move" (default): Copies the threat into a hidden .usb_quarantine folder
-  with a disarmed `.quarantined` extension, verifies SHA-256 integrity, records
-  audit metadata in manifest.json, and removes the original threat from the USB.
+- mode="move" (default): Disarms the threat using reversible XOR encoding into
+  a hidden .usb_quarantine folder with a `.quarantined` extension, verifies
+  SHA-256 integrity, records audit metadata in manifest.json, and removes the
+  original threat from the USB.
 - mode="copy": Non-destructive forensic review-hold copy that leaves the
   original file untouched.
 """
@@ -21,6 +22,8 @@ import config
 
 
 FILE_ATTRIBUTE_NORMAL = 0x80
+QUARANTINE_MAGIC = b"UGQ1"
+QUARANTINE_XOR_KEY = 0xAA
 
 
 def sha256_file(file_path):
@@ -29,6 +32,29 @@ def sha256_file(file_path):
     with open(file_path, "rb") as source:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _xor_transform_file(src_path, dst_path, add_header=True):
+    """Disarm or restore file bytes using reversible XOR streaming."""
+    digest = hashlib.sha256()
+    with open(src_path, "rb") as src, open(dst_path, "wb") as dst:
+        if add_header:
+            dst.write(QUARANTINE_MAGIC)
+        else:
+            magic = src.read(len(QUARANTINE_MAGIC))
+            if magic != QUARANTINE_MAGIC:
+                raise OSError("Invalid quarantine container header.")
+        while True:
+            chunk = src.read(1024 * 1024)
+            if not chunk:
+                break
+            transformed = bytes(b ^ QUARANTINE_XOR_KEY for b in chunk)
+            if add_header:
+                digest.update(chunk)  # Original plaintext SHA-256
+            else:
+                digest.update(transformed)  # Restored plaintext SHA-256
+            dst.write(transformed)
     return digest.hexdigest()
 
 
@@ -143,7 +169,7 @@ def quarantine_file(file_path, usb_root, reason="", mode="move"):
         counter += 1
 
     try:
-        shutil.copy2(str(source), str(destination))
+        disarmed_hash = _xor_transform_file(source, destination, add_header=True)
     except OSError as exc:
         if destination.exists():
             try:
@@ -151,10 +177,9 @@ def quarantine_file(file_path, usb_root, reason="", mode="move"):
                 os.remove(str(destination))
             except OSError:
                 pass
-        raise OSError("Failed to copy file into quarantine: {}".format(exc)) from exc
+        raise OSError("Failed to disarm file into quarantine: {}".format(exc)) from exc
 
-    copied_hash = sha256_file(destination)
-    if copied_hash != original_hash:
+    if disarmed_hash != original_hash:
         try:
             _clear_windows_readonly_attributes(destination)
             os.remove(str(destination))
@@ -170,6 +195,7 @@ def quarantine_file(file_path, usb_root, reason="", mode="move"):
         "id": "{}_{}".format(stamp, original_hash[:12]),
         "quarantined_at": timestamp.isoformat(),
         "mode": mode,
+        "format": "xor_v1",
         "original_name": source.name,
         "original_relative_path": str(source.relative_to(root)),
         "quarantined_filename": destination.name,
@@ -222,11 +248,7 @@ def restore_file(usb_root, quarantined_filename, overwrite=False):
     if not q_path.is_file():
         raise FileNotFoundError("Quarantined file missing on disk: {}".format(q_path))
 
-    actual_hash = sha256_file(q_path)
     expected_hash = target_entry.get("sha256", "")
-    if expected_hash and actual_hash != expected_hash:
-        raise OSError("Cannot restore: quarantined file failed SHA-256 verification.")
-
     restore_target = root / target_entry["original_relative_path"]
     _, resolved_restore = _ensure_within_root(restore_target, root)
     if resolved_restore.exists() and not overwrite:
@@ -235,13 +257,44 @@ def restore_file(usb_root, quarantined_filename, overwrite=False):
         )
 
     resolved_restore.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(str(q_path), str(resolved_restore))
-    if sha256_file(resolved_restore) != actual_hash:
+
+    if target_entry.get("format") == "xor_v1":
         try:
-            os.remove(str(resolved_restore))
+            restored_hash = _xor_transform_file(
+                q_path, resolved_restore, add_header=False
+            )
         except OSError:
-            pass
-        raise OSError("Restored file failed SHA-256 verification.")
+            if resolved_restore.exists():
+                try:
+                    os.remove(str(resolved_restore))
+                except OSError:
+                    pass
+            raise
+
+        if expected_hash and restored_hash != expected_hash:
+            try:
+                os.remove(str(resolved_restore))
+            except OSError:
+                pass
+            raise OSError("Cannot restore: quarantined file failed SHA-256 verification.")
+
+        if sha256_file(resolved_restore) != restored_hash:
+            try:
+                os.remove(str(resolved_restore))
+            except OSError:
+                pass
+            raise OSError("Restored file failed SHA-256 verification.")
+    else:
+        actual_hash = sha256_file(q_path)
+        if expected_hash and actual_hash != expected_hash:
+            raise OSError("Cannot restore: quarantined file failed SHA-256 verification.")
+        shutil.copy2(str(q_path), str(resolved_restore))
+        if sha256_file(resolved_restore) != actual_hash:
+            try:
+                os.remove(str(resolved_restore))
+            except OSError:
+                pass
+            raise OSError("Restored file failed SHA-256 verification.")
 
     _clear_windows_readonly_attributes(q_path)
     os.remove(str(q_path))

@@ -141,9 +141,10 @@ LNK_SUSPICIOUS_TOKENS = [
 
 
 class DriveInfo:
-    def __init__(self, root, volume_name):
+    def __init__(self, root, volume_name, volume_serial="UNKNOWN"):
         self.root = root
         self.volume_name = volume_name
+        self.volume_serial = volume_serial
 
 
 # ---------------------------------------------------------------------------
@@ -166,8 +167,8 @@ def acquire_single_instance_mutex():
     return handle
 
 
-def _volume_name(root):
-    """Return a volume label, or an empty string when Windows cannot read it."""
+def _volume_metadata(root):
+    """Return (volume_name, volume_serial_hex) for a Windows drive."""
     get_volume_information = ctypes.windll.kernel32.GetVolumeInformationW
     volume_name = ctypes.create_unicode_buffer(261)
     file_system_name = ctypes.create_unicode_buffer(261)
@@ -184,7 +185,9 @@ def _volume_name(root):
         file_system_name,
         len(file_system_name),
     )
-    return volume_name.value if success else ""
+    if not success:
+        return "", "UNKNOWN"
+    return volume_name.value, "{:08X}".format(serial_number.value)
 
 
 def find_removable_drives():
@@ -201,7 +204,8 @@ def find_removable_drives():
         root = "{}:\\".format(chr(ord("A") + index))
         # Drive type 2 == DRIVE_REMOVABLE
         if kernel32.GetDriveTypeW(ctypes.c_wchar_p(root)) == 2:
-            drives.append(DriveInfo(root, _volume_name(root)))
+            volume_name, volume_serial = _volume_metadata(root)
+            drives.append(DriveInfo(root, volume_name, volume_serial))
     return drives
 
 
@@ -215,6 +219,15 @@ def _is_hidden_or_system(file_path):
     if attrs == -1 or attrs == 0xFFFFFFFF:
         return False, False
     return bool(attrs & FILE_ATTRIBUTE_HIDDEN), bool(attrs & FILE_ATTRIBUTE_SYSTEM)
+
+
+def _has_pe_magic_header(file_path):
+    """Return True if a file starts with the Windows PE 'MZ' header."""
+    try:
+        with open(file_path, "rb") as handle:
+            return handle.read(2) == b"MZ"
+    except OSError:
+        return False
 
 
 def _startup_command():
@@ -633,14 +646,15 @@ def _detection_ratio(vt_result):
 
 
 def combine_verdict(vt_result, heuristics):
-    """Combine VirusTotal and offline heuristic findings into a final verdict."""
+    """Combine VirusTotal and offline heuristic findings with FP resistance."""
     vt_malicious = vt_result["malicious"]
     vt_suspicious = vt_result["suspicious"]
+    major_hits = len(vt_result.get("vendors", []))
     h_score = heuristics["score"]
 
-    if vt_malicious >= 1 or h_score >= 60:
+    if vt_malicious >= 3 or (vt_malicious >= 1 and major_hits >= 1) or h_score >= 60:
         return "Malicious"
-    if vt_suspicious >= 1 or h_score >= 30:
+    if vt_malicious >= 1 or vt_suspicious >= 1 or h_score >= 30:
         return "Suspicious"
     if vt_result["status"] == "Safe":
         return "Safe"
@@ -690,13 +704,21 @@ def scan_drive(
             if cancel_event.is_set():
                 break
 
+            file_path = os.path.join(current_root, filename)
             path_obj = Path(filename)
             suffix = path_obj.suffix.casefold()
             is_autorun = filename.casefold() == "autorun.inf"
-            if suffix not in config.SCAN_EXTENSIONS and not is_autorun:
+            should_scan = (
+                suffix in config.SCAN_EXTENSIONS
+                or is_autorun
+                or (
+                    (suffix in config.DECOY_EXTENSIONS or not suffix)
+                    and _has_pe_magic_header(file_path)
+                )
+            )
+            if not should_scan:
                 continue
 
-            file_path = os.path.join(current_root, filename)
             file_count += 1
             emit_status("Scanning {} ({})...".format(drive.root, filename))
 
@@ -756,6 +778,10 @@ def scan_drive(
                 "event_type": "usb_file_scan",
                 "drive_letter": drive.root,
                 "volume_name": drive.volume_name,
+                "volume_serial": drive.volume_serial,
+                "mitre_techniques": (
+                    ["T1091", "T1036.007"] if heuristics["score"] > 0 else ["T1091"]
+                ),
                 "file_name": filename,
                 "absolute_path": os.path.abspath(file_path),
                 "sha256": sha256,

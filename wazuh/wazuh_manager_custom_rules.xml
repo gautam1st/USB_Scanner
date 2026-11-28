@@ -1,0 +1,32 @@
+<group name="usb_guard_soc,removable_media,">
+  <rule id="100500" level="3">
+    <decoded_as>json</decoded_as>
+    <field name="event_type">^usb_file_scan$</field>
+    <description>USB-Guard SOC: Removable media file scanned ($(file_name) on $(drive_letter)).</description>
+  </rule>
+
+  <rule id="100501" level="7">
+    <if_sid>100500</if_sid>
+    <field name="verdict">^Suspicious$</field>
+    <description>USB-Guard SOC: Suspicious file detected on USB ($(file_name), risk $(local_risk_score)/100).</description>
+    <mitre>
+      <id>T1091</id>
+    </mitre>
+  </rule>
+
+  <rule id="100502" level="12">
+    <if_sid>100500</if_sid>
+    <field name="verdict">^Malicious$</field>
+    <description>USB-Guard SOC: MALICIOUS file detected on USB ($(file_name), SHA256: $(sha256)).</description>
+    <mitre>
+      <id>T1091</id>
+      <id>T1036.007</id>
+    </mitre>
+  </rule>
+
+  <rule id="100503" level="6">
+    <decoded_as>json</decoded_as>
+    <field name="event_type">^usb_file_quarantined$</field>
+    <description>USB-Guard SOC: Threat quarantined from USB ($(original_path)).</description>
+  </rule>
+</group>

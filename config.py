@@ -11,7 +11,7 @@ from pathlib import Path
 
 
 APP_NAME = "USB-Guard SOC"
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.1.0"
 APP_REG_NAME = "USBGuardSOC"
 SINGLE_INSTANCE_MUTEX_NAME = r"Global\USBGuardSOC_SingleInstance_Mutex"
 

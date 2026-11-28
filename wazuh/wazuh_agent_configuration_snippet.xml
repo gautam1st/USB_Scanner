@@ -1,0 +1,4 @@
+<localfile>
+  <location>C:\ProgramData\USB_Guard_SOC\logs\usb_security_events.json</location>
+  <log_format>json</log_format>
+</localfile>
