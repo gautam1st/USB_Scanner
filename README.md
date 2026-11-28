@@ -11,7 +11,7 @@
 ## Step 1: Download & Run the App
 
 ### Option A: Easy Way — Download the `.exe` (No Python Required)
-1. On this GitHub page, look at the right sidebar under **Releases** and click the latest version (`v2.0.0`).
+1. On this GitHub page, look at the right sidebar under **Releases** and click the latest version (`v2.1.0`).
 2. Under **Assets**, click **`USB-Guard-SOC.exe`** to download it.
 3. Move `USB-Guard-SOC.exe` into a permanent folder (for example, `C:\Apps\USB-Guard-SOC\`) so you do not accidentally delete it from Downloads.
 4. Double-click **`USB-Guard-SOC.exe`** to open the app.
